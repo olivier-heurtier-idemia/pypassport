@@ -61,11 +61,11 @@ class OpenSSL(Logger):
         try:
             self._toDisk("certif.cer", certif)
             data = self._execute("verify -CApath "+trustedCertif+" certif.cer")       
-            data = str.replace(data, "certif.cer: ", "")
+            data = data.replace(b"certif.cer: ", b"")
         finally:
             self._remFromDisk("certif.cer")
 
-        if data[:2] == "OK":
+        if data[:2] == b"OK":
             return True
         raise OpenSSLException(data.strip())
     

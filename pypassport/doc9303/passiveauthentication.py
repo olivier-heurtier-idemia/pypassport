@@ -137,7 +137,7 @@ class PassiveAuthentication(Logger):
         
         @param sodObj: A filled SOD object
         @type sodObj: An SOD object  
-        @return: The data (a binary string) if the verifucation is ok, else an PassiveAuthentication is raised.
+        @return: The data (a binary string) if the verification is ok, else an PassiveAuthentication is raised.
         @raise PassiveAuthenticationException: I{sodObj must be a sod object}: the sodObj parameter must be a sod object. 
         @raise PassiveAuthenticationException: I{sodObj object is not initialized}: the sodobj parameter is a sod object, but is not initialized.
         @raise openSSLException: See the openssl documentation
@@ -179,8 +179,8 @@ class PassiveAuthentication(Logger):
         
     def getCertificate(self, sodObj):
         """  
-        Retrieve de DocumentSiner certificate out of the SOD.
-        @return: A PEM represenation of the certificate or None is not present.
+        Retrieve de DocumentSigner certificate out of the SOD.
+        @return: A PEM representation of the certificate or None is not present.
         @raise PassiveAuthenticationException: I{sodObj must be a sod object}: the sodObj parameter must be a sod object. 
         @raise PassiveAuthenticationException: I{sodObj object is not initialized}: the sodobj parameter is a sod object, but is not initialized.
         @raise openSSLException: See the openssl documentation
@@ -191,7 +191,7 @@ class PassiveAuthentication(Logger):
         if sodObj.body is None:
             raise PassiveAuthenticationException("sodObj object is not initialized")
         
-        return self._openSSL.retrievePkcs7Certificate(sodObj.body)               
+        return self._openSSL.retrievePkcs7Certificate(sodObj.body)
         
     def _readDGfromLDS(self, data):
         """
