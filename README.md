@@ -25,6 +25,7 @@ The picture can be read and saved as well:
 
 import io
 from PIL import Image
+import iso19794
 
 passportimage = p['DG2']['A1']['5F2E']
 imgfp = io.BytesIO(passportimage)
