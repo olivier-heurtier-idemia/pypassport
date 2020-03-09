@@ -21,7 +21,6 @@ from pypassport.tlvparser import TLVParser, TLVParserException
 from pypassport.asn1 import *
 from pypassport.hexfunctions import *
 from pypassport.logger import Logger
-from pypassport.iso19794 import ISO19794_5
 from pypassport.iso7816 import Iso7816
 from pypassport.doc9303 import converter, mrz, bac
 from pypassport.openssl import OpenSSL, OpenSSLException
@@ -303,10 +302,7 @@ class DataGroup2(DataGroup):
                 data[x] = binToHexRep(data[x])
             #5F2E or 7F2E
             tag = self._getTag()
-            value = self._getValue()
-            headerSize, data['meta'] = ISO19794_5.analyse(binToHexRep(value))
-           
-            data[tag] = value[headerSize:]
+            data[tag] = self._getValue()
             
             self[templateID] = {}
             self[templateID] = data
