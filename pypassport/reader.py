@@ -27,11 +27,6 @@ from pypassport.singleton import Singleton
 from pypassport.logger import Logger
 from pypassport.doc9303 import converter
 
-if sys.platform == 'win32':
-    f = os.popen("net start scardsvr", "r")
-    res = f.read()
-    f.close()
-
 class ReaderException(Exception):
     def __init__(self, *params):
         Exception.__init__(self, *params)

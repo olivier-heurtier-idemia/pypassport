@@ -377,6 +377,9 @@ class EPassport(dict, logger.Logger):
         self.log("getitem " + tag)
         tag = converter.toTAG(tag)
         self.log("getitem converted " + tag)
+        if tag == '63':
+            # DG3 is not freely accessible
+            return None
         if tag not in self:
             try:
                 tag = converter.toTAG(tag)
