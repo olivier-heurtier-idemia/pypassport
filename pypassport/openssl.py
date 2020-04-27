@@ -17,6 +17,8 @@
 # If not, see <http://www.gnu.org/licenses/>.
 
 import os, shutil
+import tempfile
+from contextlib import ExitStack
 import subprocess
 from pypassport import hexfunctions
 from pypassport.logger import Logger
@@ -24,6 +26,19 @@ from pypassport.logger import Logger
 class OpenSSLException(Exception):
     def __init__(self, *params):
         Exception.__init__(self, *params)
+
+class _TemporaryFileWrapper:
+    def __init__(self, name):
+        self.name = name
+    def __enter__(self):
+        return self
+    def __exit__(self, exc, value, tb):
+        os.unlink(self.name)
+def TempFile(data=b' '):
+    with tempfile.NamedTemporaryFile(delete=False) as t:
+        t.file.write(data)
+        t.file.close()
+        return _TemporaryFileWrapper(t.name)
 
 class OpenSSL(Logger):
     
@@ -45,11 +60,8 @@ class OpenSSL(Logger):
         @param p7b: A pkcs#7 signature in der format
         @return: The data contained in the signature
         """
-        try:
-            self._toDisk("p7b", p7b)
-            return self._execute("smime -verify -in p7b -inform DER -noverify")
-        finally:
-            self._remFromDisk("p7b")
+        with TempFile(p7b) as f:
+            return self._execute("smime -verify -in " + f.name + " -inform DER -noverify")
             
     def verifyX509Certificate(self, certif, trustedCertif):
         """
@@ -58,12 +70,9 @@ class OpenSSL(Logger):
         @param trustedCertif: The directory containing the root certificates
         @return: True if correct
         """
-        try:
-            self._toDisk("certif.cer", certif)
-            data = self._execute("verify -CApath "+trustedCertif+" certif.cer")       
-            data = data.replace(b"certif.cer: ", b"")
-        finally:
-            self._remFromDisk("certif.cer")
+        with TempFile(certif) as f:
+            data = self._execute("verify -CApath "+trustedCertif+" "+f.name)
+            data = data.replace(f.name.encode('latin-1')+b": ", b"")
 
         if data[:2] == b"OK":
             return True
@@ -76,11 +85,8 @@ class OpenSSL(Logger):
         @param derFile: The certificate in der format
         @return: The certificate in a human readable format
         """
-        try:
-            self._toDisk("data.der", derFile)
-            return self._execute("pkcs7 -in data.der -inform DER -print_certs -text")
-        finally:
-            self._remFromDisk("data.der")
+        with TempFile(derFile) as f:
+            return self._execute("pkcs7 -in "+f.name+" -inform DER -print_certs -text")
             
     def retrieveRsaPubKey(self, derFile):
         """ 
@@ -89,11 +95,8 @@ class OpenSSL(Logger):
         @return: The rsa public key in pem formar
         """
         
-        try:
-            self._toDisk("pubK", derFile)
-            return self._execute("rsa -in pubK -inform DER -pubin -text")
-        finally:
-            self._remFromDisk("pubK")
+        with TempFile(derFile) as f:
+            return self._execute("rsa -in "+f.name+" -inform DER -pubin -text")
             
     def retrieveSignedData(self, pubK, signature):
         """ 
@@ -106,46 +109,36 @@ class OpenSSL(Logger):
         #Verify if openSSL is installed
         self._execute("version")
         data = None
-        try:
-            self._toDisk("pubK", pubK)
-            self._toDisk("signature", signature)
-            self._execute("rsautl -inkey pubK -in signature -verify -pubin -raw -out res -keyform DER", True)
-            sig = open("res", "rb")
-            data = sig.read()
-            sig.close()
-        finally:
-            self._remFromDisk("pubK")
-            self._remFromDisk("challenge")
-            self._remFromDisk("res")
-            self._remFromDisk("signature")
+        with ExitStack as stack:
+            f_pubK = stack.enter_context(TempFile(pubK))
+            f_signature = stack.enter_context(TempFile(signature))
+            f_res = stack.enter_context(TempFile())
+            self._execute("rsautl -inkey "+f_pubK.name+" -in "+f_signature.name+" -verify -pubin -raw -out "+f_res.name+" -keyform DER", True)
+            with open(f_res.name, "rb") as sig:
+                data = sig.read()
         
         return data
     
     def signData(self, sodContent, ds, dsKey):
         bkup = self._opensslLocation
         
-        try:
-            p12 = self.toPKCS12(ds, dsKey, "titus")
-            dsDer = self.x509ToDER(ds)
+        p12 = self.toPKCS12(ds, dsKey, "titus")
+        dsDer = self.x509ToDER(ds)
             
-            self._toDisk("sodContent", sodContent)
-            self._toDisk("p12", p12)
-            self._toDisk("ds.cer", dsDer)
-            
-            self._opensslLocation = "java -jar "
-            cmd = "createSod.jar --certificate ds.cer --content sodContent --keypass titus --privatekey p12 --out signed"
-            res = self._execute(cmd, True)
-            f = open("signed", "rb")
-            res = f.read()
-            f.close()
+        with ExitStack as stack:
+            f_sodContent = stack.enter_context(TempFile(sodContent))
+            f_p12 = stack.enter_context(TempFile(p12))
+            f_dsDer = stack.enter_context(TempFile(dsDer))
+            f_signed = stack.enter_context(TempFile())
+            try:            
+                self._opensslLocation = "java -jar "
+                cmd = "createSod.jar --certificate "+f_dsDer.name+" --content "+f_sodContent.name+" --keypass titus --privatekey "+f_p12.name+" --out "+f_signed.name
+                res = self._execute(cmd, True)
+            finally:
+                self._opensslLocation = bkup
+            with open(f_signed.name, "rb") as f:
+                res = f.read()
             return res
-        finally:
-            self._opensslLocation = bkup
-            self._remFromDisk("sodContent")
-            self._remFromDisk("p12")
-            self._remFromDisk("ds.cer")
-            self._remFromDisk("signed")
-            
             
     
     def genRSAprKey(self, size):
@@ -160,14 +153,13 @@ class OpenSSL(Logger):
         """
         Generate a x509 self-signed certificate in PEM format
         """
-        try:
+        with TempFile(cscaKey) as f:
             if distinguishedName:
                 subj = distinguishedName.getSubject()
             else:
                 subj = DistinguishedName(C="BE", O="Gouv", CN="CSCA-BELGIUM").getSubject()
             
-            self._toDisk("csca.key", cscaKey)
-            cmd = "req -new -x509 -key csca.key -batch -text"
+            cmd = "req -new -x509 -key "+f.name+" -batch -text"
             if self._config:
                 cmd += " -config " + self._config
             if subj:
@@ -175,28 +167,23 @@ class OpenSSL(Logger):
             if validity:
                 cmd += " -days " + str(validity)
             return self._execute(cmd)
-        finally:
-            self._remFromDisk("csca.key")
     
     def genX509Req(self, dsKey, distinguishedName=None):
         """
         Generate a x509 request in PEM format
         """
-        try:
+        with TempFile(dsKey) as f:
             if distinguishedName:
                 subj = distinguishedName.getSubject()
             else:
                 subj = DistinguishedName(C="BE", O="Gouv", CN="Document Signer BELGIUM").getSubject()
             
-            self._toDisk("ds.key", dsKey)
-            cmd = "req -new -key ds.key -batch"
+            cmd = "req -new -key "+f.name+" -batch"
             if self._config:
                 cmd += " -config " + self._config
             if subj:
                 cmd += " -subj " + str(subj)
             return self._execute(cmd)
-        finally:
-            self._remFromDisk("ds.key")
             
     def signX509Req(self, csr, csca, cscaKey, validity=""):
         """
@@ -207,21 +194,16 @@ class OpenSSL(Logger):
         @param cscaKey: The CA private key
         @param validity: The validity of the signed certificate
         """
-        try:
-            self._toDisk("ds.csr", csr)
-            self._toDisk("csca.pem", csca)
-            self._toDisk("csca.key", cscaKey)
-            cmd = "ca -in ds.csr -keyfile csca.key -cert csca.pem  -batch"
+        with ExitStack as stack:
+            f_csr = stack.enter_context(TempFile(csr))
+            f_csca = stack.enter_context(TempFile(csca))
+            f_cscaKey = stack.enter_context(TempFile(f_cscaKey))
+            cmd = "ca -in "+f_csr.name+" -keyfile "+f_cscaKey.name+" -cert "+f_csca.name+"  -batch"
             if self._config:
                 cmd += " -config " + self._config
             if validity:
                 cmd += " -days " + str(validity)
             return self._execute(cmd)
-            
-        finally:
-            self._remFromDisk("ds.csr")
-            self._remFromDisk("csca.pem")
-            self._remFromDisk("csca.key")
             
     def genCRL(self, csca, cscaKey):
         """ 
@@ -229,34 +211,27 @@ class OpenSSL(Logger):
         @param cscaKey: The CA private key
         """
         
-        try:
-            self._toDisk("csca.pem", csca)
-            self._toDisk("csca.key", cscaKey)
-            cmd = "ca -gencrl -cert csca.pem -keyfile csca.key"
+        with ExitStack as stack:
+            f_csca = stack.enter_context(TempFile(csca))
+            f_cscaKey = stack.enter_context(TempFile(f_cscaKey))
+            cmd = "ca -gencrl -cert "+f_csca.name+" -keyfile "+f_cscaKey.name
             if self._config:
                 cmd += " -config " + self._config
             return self._execute(cmd)
-        finally:
-            self._remFromDisk("csca.pem")
-            self._remFromDisk("csca.key")
             
     def revokeX509(self, cert, csca, cscaKey):
         """ 
         @param csca: The root certificate
         @param cscaKey: The CA private key
         """
-        try:
-            self._toDisk("toRevoke", cert)
-            self._toDisk("csca.pem", csca)
-            self._toDisk("csca.key", cscaKey)
-            cmd = "ca -revoke toRevoke -cert csca.pem -keyfile csca.key"
+        with ExitStack as stack:
+            f_cert = stack.enter_context(TempFile(cert))
+            f_csca = stack.enter_context(TempFile(csca))
+            f_cscaKey = stack.enter_context(TempFile(f_cscaKey))
+            cmd = "ca -revoke "+f_cert.name+" -cert "+f_csca.name+" -keyfile "+f_cscaKey.name
             if self._config:
                 cmd += " -config " + self._config
             return self._execute(cmd, True)
-        finally:
-            self._remFromDisk("toRevoke")
-            self._remFromDisk("csca.pem")
-            self._remFromDisk("csca.key")
 
     
     def toPKCS12(self, certif, prK, pwd):
@@ -264,59 +239,33 @@ class OpenSSL(Logger):
         Return a RSA key pair under the PKCS#12 format.
         PKCS#12: used to store private keys with accompanying public key certificates, protected with a password-based symmetric key
         """
-        try:
-            self._toDisk("certif", certif)
-            self._toDisk("prK", prK)
-            return self._execute("pkcs12 -export -in certif -inkey prK -passout pass:" + pwd)
-        finally: 
-            self._remFromDisk("certif")
-            self._remFromDisk("prK")
+        with ExitStack as stack:
+            f_certif = stack.enter_context(TempFile(certif))
+            f_prK = stack.enter_context(TempFile(prK))
+            return self._execute("pkcs12 -export -in "+f_certif.name+" -inkey "+f_prK.name+" -passout pass:" + pwd)
             
     def x509ToDER(self, certif):
-        try:
-            self._toDisk("pem", certif)
-            return self._execute("x509 -in pem -outform DER")
-        finally:
-            self._remFromDisk("pem")
+        with TempFile(certif) as f:
+            return self._execute("x509 -in "+f.name+" -outform DER")
             
     def prRSAToDERPb(self, prKey):
         """ 
         Retrieve the corresponding DER encoded public key fron the given a RSA private key
         """
-        try:
-            self._toDisk("dg15", prKey)
-            return self._execute("rsa -pubout -in dg15 -outform der")
-        finally:
-            self._remFromDisk("dg15")
+        with TempFile(prKey) as f:
+            return self._execute("rsa -pubout -in "+f.name+" -outform der")
             
     def RSAKeyToText(self, key):
         """ 
-        COnvert a key to its text format
+        Convert a key to its text format
         """
-        try:
-            self._toDisk("key", key)
-            return self._execute("rsa -text -in key")
-        finally:
-            self._remFromDisk("key")
+        with TempFile(key) as f:
+            return self._execute("rsa -text -in "+f.name)
             
     def crlToDER(self, crl):
-        try:
-            self._toDisk("crl", crl)
-            return self._execute("crl -inform PEM -in crl -outform DER")
-        finally:
-            self._remFromDisk("crl")
-                    
-    def _toDisk(self, name, data=None):
-        f = open(name, "wb")
-        if data: f.write(data)
-        f.close()
-        
-    def _remFromDisk(self, name):
-        try:
-            os.remove(name)
-        except:
-            pass
-        
+        with TempFile(crl) as f:
+            return self._execute("crl -inform PEM -in "+f.name+" -outform DER")
+
     def _execute(self, toExecute, empty=False):
         
         cmd = self._opensslLocation + " " + toExecute
@@ -342,12 +291,9 @@ class OpenSSL(Logger):
             return False
                   
     def printCrl(self, crl):
-        try:
-            self._toDisk("crl", crl)
-            cmd = 'crl -in crl -text -noout -inform DER'
+        with TempFile(crl) as f:
+            cmd = 'crl -in '+f.name+' -text -noout -inform DER'
             return self._execute(cmd)
-        finally:
-            self._remFromDisk("crl")
 
     location = property(_getOpensslLocation, _setOpensslLocation, None, None)
     
