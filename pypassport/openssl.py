@@ -16,6 +16,9 @@
 # License along with pyPassport.
 # If not, see <http://www.gnu.org/licenses/>.
 
+# See https://www.openssl.org/docs/manmaster/man1/openssl.html
+# and https://www.openssl.org/docs/man1.1.1/man1/
+
 import os, shutil
 import tempfile
 from contextlib import ExitStack
@@ -96,8 +99,40 @@ class OpenSSL(Logger):
         """
         
         with TempFile(derFile) as f:
-            return self._execute("rsa -in "+f.name+" -inform DER -pubin -text")
+            return self._execute("pkey -in "+f.name+" -inform DER -pubin -text")
             
+    def retrieveECPubKey(self, derFile):
+        """ 
+        Transform the EC public key in der format to pem format" 
+        @param derFile: A EC public key in der format
+        @return: The EC public key in pem format
+        """
+        
+        with ExitStack() as stack:
+            f_der = stack.enter_context(TempFile(derFile))
+            f_pem = stack.enter_context(TempFile())
+            pem = self._execute("ec -in "+f_der.name+" -inform DER -pubin -outform PEM -out "+f_pem.name)
+            with open(f_pem.name, "rb") as pem:
+                return pem.read()
+
+    def verifyECSignature(self, pubK, signature, challenge):
+        """ 
+        Verify the EC signature
+        @param pubK: A EC public key in der format
+        @param signature: The signature to verify with the pubKey, in DER format
+        @param challenge: The challenge that was signed (hashed value of the challenge)
+        @return: The data contained in the signature
+        """
+        self._execute("version")
+        with ExitStack() as stack:
+            f_pubK = stack.enter_context(TempFile(pubK))
+            f_signature = stack.enter_context(TempFile(signature))
+            f_challenge = stack.enter_context(TempFile(challenge))
+            ret = self._execute("pkeyutl -keyform DER -inkey "+f_pubK.name+" -sigfile "+f_signature.name+" -verify -pubin -in "+f_challenge.name, True)
+            if ret.find(b'Verified Successfully') > 0:
+                return True
+            return False
+
     def retrieveSignedData(self, pubK, signature):
         """ 
         Retrieve the signed data from the signature
@@ -108,8 +143,7 @@ class OpenSSL(Logger):
         
         #Verify if openSSL is installed
         self._execute("version")
-        data = None
-        with ExitStack as stack:
+        with ExitStack() as stack:
             f_pubK = stack.enter_context(TempFile(pubK))
             f_signature = stack.enter_context(TempFile(signature))
             f_res = stack.enter_context(TempFile())
@@ -125,7 +159,7 @@ class OpenSSL(Logger):
         p12 = self.toPKCS12(ds, dsKey, "titus")
         dsDer = self.x509ToDER(ds)
             
-        with ExitStack as stack:
+        with ExitStack() as stack:
             f_sodContent = stack.enter_context(TempFile(sodContent))
             f_p12 = stack.enter_context(TempFile(p12))
             f_dsDer = stack.enter_context(TempFile(dsDer))
@@ -194,7 +228,7 @@ class OpenSSL(Logger):
         @param cscaKey: The CA private key
         @param validity: The validity of the signed certificate
         """
-        with ExitStack as stack:
+        with ExitStack() as stack:
             f_csr = stack.enter_context(TempFile(csr))
             f_csca = stack.enter_context(TempFile(csca))
             f_cscaKey = stack.enter_context(TempFile(f_cscaKey))
@@ -224,7 +258,7 @@ class OpenSSL(Logger):
         @param csca: The root certificate
         @param cscaKey: The CA private key
         """
-        with ExitStack as stack:
+        with ExitStack() as stack:
             f_cert = stack.enter_context(TempFile(cert))
             f_csca = stack.enter_context(TempFile(csca))
             f_cscaKey = stack.enter_context(TempFile(f_cscaKey))
@@ -239,7 +273,7 @@ class OpenSSL(Logger):
         Return a RSA key pair under the PKCS#12 format.
         PKCS#12: used to store private keys with accompanying public key certificates, protected with a password-based symmetric key
         """
-        with ExitStack as stack:
+        with ExitStack() as stack:
             f_certif = stack.enter_context(TempFile(certif))
             f_prK = stack.enter_context(TempFile(prK))
             return self._execute("pkcs12 -export -in "+f_certif.name+" -inkey "+f_prK.name+" -passout pass:" + pwd)

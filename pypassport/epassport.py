@@ -225,7 +225,7 @@ class EPassport(dict, logger.Logger):
         sm.register(self._logFct)
         return self._iso7816.setCiphering(sm)
                
-    def doActiveAuthentication(self, dg15=None):
+    def doActiveAuthentication(self, dg15=None, EC=False):
         """
         Execute the active authentication protocol.
         
@@ -238,7 +238,7 @@ class EPassport(dict, logger.Logger):
         try:
             if dg15 == None:
                 dg15 = self["DG15"]
-            res = self._aa.executeAA(dg15)
+            res = self._aa.executeAA(dg15, EC)
             return res
         except datagroup.DataGroupException as msg:
             res = msg

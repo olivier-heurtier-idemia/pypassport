@@ -28,6 +28,13 @@ from pypassport.logger import Logger
 from pypassport.openssl import OpenSSL, OpenSSLException
 from pypassport.doc9303 import datagroup
 
+# ASN1 structure to encode plain ECDSA signature
+class ECSignatureRecord(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType('r', univ.Integer()),
+        namedtype.NamedType('s', univ.Integer()),
+    )
+
 class ActiveAuthenticationException(Exception):
     def __init__(self, *params):
         Exception.__init__(self, *params)
@@ -60,13 +67,15 @@ class ActiveAuthentication(Logger):
         
         self._dg15 = None
         
-    def executeAA(self, dg15): 
+    def executeAA(self, dg15, EC=False, hash=sha256): 
         """
         Perform the Active Authentication protocol.
         Work only with RSA, modulus length of 1024 and with SHA1.
         
         @param dg15: A initialized dataGroup15 object
         @type dg15: dataGroup15 
+        @param EC: True if ECDSA is used y the passport
+        @param hash: hash function (default: sha256)
         @return: True if the authentication succeed, else False.
         @rtype: Boolean
         @raise ActiveAuthenticationException: If the Active Authentication is not supported (The DG15 is not found or the hash algo is not supported). 
@@ -79,8 +88,9 @@ class ActiveAuthentication(Logger):
         
         self.RND_IFD = self._genRandom(8)
         self.signature = self._getSignature(self.RND_IFD)
+        if EC:
+            return self._verifyECSignature(dg15.body, self.signature, self.RND_IFD, hash)
         self.F = self._decryptSignature(dg15.body, self.signature)
-        
         (hash, hashSize, offset) = self._getHashAlgo(self.F)
         self.D = self._extractDigest(self.F, hashSize, offset)
         self.M1 = self._extractM1(self.F, hashSize, offset)
@@ -118,8 +128,30 @@ class ActiveAuthentication(Logger):
         
         if type(dg15) != type(datagroup.DataGroup15(None)):
             raise ActiveAuthenticationException("The parameter type is not valid, must be a dataGroup15 object")
-        
-        return self._openssl.retrieveRsaPubKey(dg15.body)
+
+        try:
+            return self._openssl.retrieveRsaPubKey(dg15.body)
+        except OpenSSLException: 
+            return self._openssl.retrieveECPubKey(dg15.body)
+
+    def _verifyECSignature(self, pubK, signature, challenge, hash):
+
+        # Generate hash of the challenge
+        challenge = sha256(challenge).digest()
+
+        # Signature is returned in plain format by the card (big endian)
+        # It must be converted to ASN.1 to be usable by OpenSSL
+        # See https://crypto.stackexchange.com/questions/57731/ecdsa-signature-rs-to-asn1-der-encoding-question
+        sig_rec = ECSignatureRecord()
+        l = int(len(signature)/2)
+        sig_rec['r'] = int.from_bytes(signature[:l], 'big')
+        sig_rec['s'] = int.from_bytes(signature[-l:], 'big')
+        sig_der = encoder.encode(sig_rec)
+
+        status = self._openssl.verifyECSignature(pubK, sig_der, challenge)
+        self.log("Verify the EC signature with the public key")
+        self.log("\tStatus: " + str(status))
+        return status
         
     def _decryptSignature(self, pubK, signature):
 
